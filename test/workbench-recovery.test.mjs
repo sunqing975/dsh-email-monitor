@@ -36,6 +36,12 @@ test('every failure offers a real retry that refetches accounts, folders, list a
   assert.match(banner, /检查账号设置|Check account settings/, '仍然保留去账号设置排查的入口')
 })
 
+test('formatted message toggle does not reference undeclared operation state', () => {
+  const content = BUNDLE.slice(BUNDLE.indexOf('function MailContent('), BUNDLE.indexOf('function MailMessage('))
+  assert.ok(content.includes('setPlain(!plain)'), 'Formatted messages must retain the plain-text toggle')
+  assert.doesNotMatch(content, /\b(?:working|busy)\b/, 'MailContent has no operation-state props or local bindings')
+})
+
 test('mailbox pagination uses the shared workbench Button', () => {
   assert.ok(!/className: "dshe-btn", disabled: loading \|\| busy/.test(BUNDLE), '分页仍是手写按钮')
   assert.match(BUNDLE, /h\(W\.Button, \{ icon: 'left', disabled: loading \|\| busy \|\| offset === 0/, '上一页要用 W.Button')
