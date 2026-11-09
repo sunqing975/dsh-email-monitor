@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 
 test('browser bundle activates and registers native main, sidebar and retained settings', () => {
+  assert.doesNotMatch(readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8'), /__stardustUpdatesGuard/, 'Standalone client must not call the removed upstream updater helper')
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),'utf8'))
   let definition, client, active='en'
   const react={createElement:(type,props,...children)=>({type,props,children}),useEffect(){}}

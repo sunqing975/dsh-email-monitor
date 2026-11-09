@@ -52,7 +52,7 @@ function MailTrashDialog({ account, folder, uids, uidValidity, folders, busy, on
 
 function MailContent({ detail, account, folder, selected }) {
   const rich = detail.rich, [plain, setPlain] = React.useState(!rich?.nodes?.length), [remote, setRemote] = React.useState(false), [images, setImages] = React.useState({}), [retry, setRetry] = React.useState(0), [loading, setLoading] = React.useState(false);
-  __stardustUpdatesGuard(React, 'dsh-email.images', { busy: loading });
+
   React.useEffect(() => {
     if (plain || !rich?.images?.length) { setLoading(false); return; }
     const ctrl = new AbortController(), urls = [], queue = rich.images.filter(image => image.kind === 'inline' || remote);
