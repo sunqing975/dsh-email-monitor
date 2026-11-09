@@ -2,10 +2,15 @@ import { createHash } from 'node:crypto'
 import type { EmailRuntime } from './runtime.js'
 import type { EmailService } from './mail-service.js'
 import type { EmailReadResult } from './types.js'
+import type { ActivityLog } from './activity-log.js'
+
+type ActivityInput = Parameters<ActivityLog['record']>[0]
 
 /** Provider-neutral boundary; snapshots must contain ALL current message IDs, including read mail. */
 export interface IncomingMailbox {
   key: string
+  account?: string
+  folder?: string
   snapshot(signal: AbortSignal): Promise<{ uidValidity: number; uids: number[] }>
   read(uid: number, signal: AbortSignal): Promise<EmailReadResult>
 }
@@ -46,6 +51,7 @@ export function createIncomingMonitorCore(options: {
   sessions: IncomingSessions
   cwd: string
   status?: (message: string) => void
+  activity?: (entry: ActivityInput) => Promise<void>
 }): { poll(signal: AbortSignal): Promise<void> } {
   let loaded = false
   let progress: IncomingProgress | undefined
@@ -56,6 +62,7 @@ export function createIncomingMonitorCore(options: {
     async poll(signal) {
       if (running) return
       running = true
+      let active: ActivityInput | undefined
       try {
         signal.throwIfAborted()
         if (!loaded) {
@@ -79,7 +86,10 @@ export function createIncomingMonitorCore(options: {
           const reset = !!progress
           progress = { uidValidity: snapshot.uidValidity, uid: uids.at(-1) ?? 0 }
           await save()
-          options.status?.(reset ? 'UIDVALIDITY changed; historical mailbox re-baselined' : 'Baseline saved; historical mail skipped')
+          const message = reset ? 'UIDVALIDITY 已变化，已重新建立基线并跳过历史邮件' : '已保存监听基线，历史邮件不会自动处理'
+          await options.activity?.({ id: 'monitor-baseline-' + mailbox.key, source: 'monitor', status: 'baseline', message,
+            account: mailbox.account, folder: mailbox.folder })
+          options.status?.(message)
           return
         }
         // Include a vanished pending UID so an already-created session can still get a factual notice.
@@ -92,6 +102,9 @@ export function createIncomingMonitorCore(options: {
             await save()
           }
           const pending = progress.pending
+          active = { id: pending.requestId, source: 'automatic', status: 'processing', message: '正在处理新邮件',
+            uid, account: mailbox.account, folder: mailbox.folder, sessionId: pending.sessionId }
+          await options.activity?.(active)
           // Re-read only in memory; the durable plugin record contains no body or credentials.
           const mail = uids.includes(uid) ? await mailbox.read(uid, signal) : undefined
           signal.throwIfAborted()
@@ -103,17 +116,31 @@ export function createIncomingMonitorCore(options: {
           // This checkpoint MUST succeed before rename or prompt. A crash in create->save can leave
           // an empty orphan session: create({cwd}) has no caller-supplied idempotency key.
           await save()
+          active = { ...active, sessionId: pending.sessionId }
+          await options.activity?.(active)
           signal.throwIfAborted()
           await sessions.rename(pending.sessionId, `新邮件 · UID ${uid}`)
           signal.throwIfAborted()
           await sessions.prompt(pending.sessionId, pending.requestId, incomingSummaryPrompt(mail, uid), signal)
           // Admission acknowledges memory only. Flush the session inbox/log before advancing mail.
           await sessions.checkpoint(pending.sessionId)
+          await options.activity?.({ ...active, status: 'submitted', message: '已提交到会话，等待生成摘要与回复建议' })
           progress.uid = Math.max(progress.uid, uid)
           delete progress.pending
           await save()
-          options.status?.('Incoming mail admitted to a session')
+          active = undefined
+          options.status?.('新邮件已提交到会话')
         }
+      } catch (error) {
+        // Report only fixed, user-safe metadata, while retaining the original rejection for callers.
+        try {
+          await options.activity?.(active
+            ? { ...active, sessionId: progress?.pending?.sessionId ?? active.sessionId, status: 'failed', message: '处理未完成，已保留进度，将使用相同请求重试' }
+            : { id: 'monitor-error-' + mailbox.key, source: 'monitor', status: 'error', message: '检查失败，已保留进度；请检查账号、存储和会话服务', account: mailbox.account, folder: mailbox.folder })
+        } catch (activityError) {
+          throw new AggregateError([error, activityError], 'Incoming monitor failed and activity could not be recorded')
+        }
+        throw error
       } finally { running = false }
     },
   }
@@ -134,7 +161,7 @@ export function incomingMailbox(runtime: EmailRuntime, accountName: string, fold
     return service
   }
   return {
-    key,
+    key, account: name, folder,
     snapshot: signal => pool().withImap(name, folder, async client => {
       if (!client.mailbox) throw new Error('IMAP mailbox not open')
       const uidValidity = Number(client.mailbox.uidValidity)
@@ -147,10 +174,11 @@ export function incomingMailbox(runtime: EmailRuntime, accountName: string, fold
   }
 }
 
-export function installIncomingMonitor(ctx: any, runtime: EmailRuntime, config: any): void {
+export function installIncomingMonitor(ctx: any, runtime: EmailRuntime, config: any, activity?: ActivityLog): void {
+  if (activity) activity.monitor = { state: config.incomingMonitorEnabled === true ? 'waiting' : 'disabled', message: config.incomingMonitorEnabled === true ? '等待监听服务就绪' : '自动监听已关闭' }
   if (typeof ctx.inject !== 'function') return
-  ctx.inject(['storage', 'sessionController', 'sessions', 'appReady'], (host: any) => {
-    if (!host.appReady?.onReady || !host.storage?.backend || !host.sessionController) return
+  ctx.inject(['storage', 'sessionController', 'sessions'], (host: any) => {
+    if (!host.storage?.backend || !host.sessionController) return
     host.effect(() => {
       const controller = new AbortController()
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -160,10 +188,18 @@ export function installIncomingMonitor(ctx: any, runtime: EmailRuntime, config: 
       let core: ReturnType<typeof createIncomingMonitorCore> | undefined
       let mailboxKey = ''
       const status = (message: string): void => host.logger?.info?.('[dsh-email incoming] ' + message)
+      const setStatus = (state: string, message: string, fields: { lastCheckedAt?: string; nextCheckAt?: string } = {}): void => {
+        if (activity) activity.monitor = { lastCheckedAt: activity.monitor.lastCheckedAt, state, message, ...fields }
+      }
       const tick = async (): Promise<void> => {
+        const timeout = new AbortController()
+        const deadline = setTimeout(() => timeout.abort(), 120_000)
+        deadline.unref?.()
+        const signal = AbortSignal.any([controller.signal, timeout.signal])
         try {
-          controller.signal.throwIfAborted()
-          if (config.incomingMonitorEnabled !== true) return
+          signal.throwIfAborted()
+          if (config.incomingMonitorEnabled !== true) { setStatus('disabled', '自动监听已关闭'); return }
+          setStatus('checking', '正在检查新邮件')
           const folder = String(config.incomingMonitorFolder || 'INBOX')
           const cwd = String(config.incomingMonitorCwd || process.cwd())
           const account = String(config.incomingMonitorAccount || '')
@@ -172,12 +208,13 @@ export function installIncomingMonitor(ctx: any, runtime: EmailRuntime, config: 
             if (!name) throw new Error('No storage backend')
             const backend = host.storage.backend.get(name)
             if (!backend.kv) throw new Error('Storage backend has no KV facility')
-            unit = await backend.kv.open({ name: 'dsh-email-incoming-monitor', version: 1, tables: ['mailboxes'], hasGlobal: false, layout: 'single' })
+            unit = await backend.kv.open({ name: 'dsh_email_incoming_monitor', version: 1, tables: ['mailboxes'], hasGlobal: false, layout: 'single' })
           }
-          controller.signal.throwIfAborted()
+          signal.throwIfAborted()
           const mailbox = incomingMailbox(runtime, account, folder)
-          if (!core || mailboxKey !== mailbox.key) {
-            core = createIncomingMonitorCore({ mailbox, cwd, status,
+          const coreKey = JSON.stringify([mailbox.key, cwd])
+          if (!core || mailboxKey !== coreKey) {
+            core = createIncomingMonitorCore({ mailbox, cwd, status, activity: activity ? entry => activity.record(entry) : undefined,
               store: {
                 load: async key => (await unit.loadAll()).tables.mailboxes?.[key],
                 save: (key, value) => unit.putRecord('mailboxes', key, value),
@@ -192,23 +229,44 @@ export function installIncomingMonitor(ctx: any, runtime: EmailRuntime, config: 
                 },
               },
             })
-            mailboxKey = mailbox.key
+            mailboxKey = coreKey
           }
-          await core.poll(controller.signal)
+          await core.poll(signal)
+          setStatus('idle', '检查完成，等待下次检查', { lastCheckedAt: new Date().toISOString() })
         } catch {
           // Upstream errors can contain usernames, endpoint URLs, or auth data; never log them.
-          if (!controller.signal.aborted) host.logger?.warn?.('[dsh-email incoming] Poll failed; progress retained for retry. Check account, storage and session services.')
+          if (!controller.signal.aborted) {
+            const message = timeout.signal.aborted ? '检查超时，已保留进度，将在下次重试' : '检查失败，已保留进度；请检查账号、存储和会话服务'
+            setStatus('error', message, { lastCheckedAt: new Date().toISOString() })
+            host.logger?.warn?.('[dsh-email incoming] ' + message)
+            try {
+              await activity?.record({ id: 'monitor-error', source: 'monitor', status: 'error', message })
+            } catch {
+              host.logger?.warn?.('[dsh-email incoming] 活动记录写入失败；请检查存储服务')
+              setStatus('error', '检查或活动记录写入失败；请检查账号、存储和会话服务')
+            }
+          }
         } finally {
+          clearTimeout(deadline)
           if (!controller.signal.aborted) {
             const rawSeconds = Number(config.incomingMonitorPollSeconds ?? 60)
             const seconds = Number.isFinite(rawSeconds) ? Math.min(3600, Math.max(30, rawSeconds)) : 60
+            if (activity) activity.monitor = { ...activity.monitor, nextCheckAt: new Date(Date.now() + seconds * 1000).toISOString() }
             timer = setTimeout(run, seconds * 1000)
             timer.unref?.()
           }
         }
       }
       const run = (): void => { if (!controller.signal.aborted) work = tick() }
-      const offReady = host.appReady.onReady(() => { if (!started && !controller.signal.aborted) { started = true; status('Enabled; starting mailbox poll'); run() } })
+      const start = (): void => {
+        if (started || controller.signal.aborted) return
+        started = true
+        status('监听服务已就绪')
+        run()
+      }
+      // appReady is optional: making it a hard dependency prevents this injection on older hosts.
+      const ready = ctx.get?.('appReady') ?? host.appReady
+      const offReady = typeof ready?.onReady === 'function' ? ready.onReady(start) : (start(), undefined)
       return () => {
         controller.abort()
         if (timer) clearTimeout(timer)

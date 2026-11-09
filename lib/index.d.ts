@@ -15,7 +15,7 @@ export declare const icon: string;
 export declare const name = "tool-email";
 export declare const inject: string[];
 export type Config = EmailConfig;
-/** Compose settings/pool lifecycle, tools, browser routes and the outgoing-mail gate. */
+/** Compose mailbox reading, monitor settings and reply-suggestion conversations. */
 export declare function apply(ctx: any, config?: Config): void;
 /** Shared application assembly; transports can be supplied by embedders and protocol fixtures. */
 export declare function installEmailApplication(ctx: any, config?: Config, dependencies?: MailDependencies): void;

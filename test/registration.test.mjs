@@ -3,7 +3,10 @@ import assert from 'node:assert/strict'
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { apply, validateAttachmentPaths, MailError, EmailService } from '../lib/index.js'
+import { apply, validateAttachmentPaths, MailError, EmailService, EmailDraftBackend, EmailSettingsBackend } from '../lib/index.js'
+import { createEmailRuntime } from '../lib/runtime.js'
+import { buildEmailTools } from '../lib/tools.js'
+import { installSendApproval } from '../lib/approval.js'
 
 function fakeCtx(scopeValue = {}) {
   const ctx = {
@@ -37,6 +40,18 @@ function fakeCtx(scopeValue = {}) {
   return ctx
 }
 
+// Exercise the retained upstream tool/approval implementation independently of
+// the simplified product's deliberately smaller apply() surface.
+function installUpstreamFixture(ctx, config) {
+  const runtime = createEmailRuntime(ctx, config)
+  const backend = new EmailSettingsBackend(ctx, runtime.settingsScope, config)
+  const drafts = new EmailDraftBackend(runtime, backend)
+  for (const definition of buildEmailTools(runtime, drafts)) ctx.tools.register(definition)
+  installSendApproval(ctx, runtime)
+  return runtime
+}
+
+const READ_TOOLS = ['email_folders', 'email_health', 'email_list', 'email_read', 'email_search']
 const QQ = { provider: 'qq', user: 'a@b.c', password: 'p' }
 
 test('all tool schemas use the portable Harness supported keyword subset', () => {
@@ -51,14 +66,14 @@ test('all tool schemas use the portable Harness supported keyword subset', () =>
     for (const [index, value] of (schema.oneOf ?? []).entries()) check(value, path + '.oneOf.' + index)
   }
   const ctx = fakeCtx()
-  apply(ctx, {})
+  installUpstreamFixture(ctx, {})
   assert.equal(ctx.tools.defs.length, 16)
   for (const tool of ctx.tools.defs) { check(tool.parameters, tool.name + '.parameters'); check(tool.output.schema, tool.name + '.output') }
 })
 
 test('every registered tool parameters value is a compiled JSON Schema (native wire contract)', () => {
   const ctx = fakeCtx()
-  apply(ctx, {})
+  installUpstreamFixture(ctx, {})
   for (const def of ctx.tools.defs) {
     assert.equal(def.parameters.type, 'object', def.name + ' parameters root must be type object')
     assert.ok(def.parameters.properties && typeof def.parameters.properties === 'object', def.name + ' must have properties')
@@ -72,16 +87,45 @@ test('every registered tool parameters value is a compiled JSON Schema (native w
   assert.deepEqual(send.parameters.properties.attachments.items, { type: 'string' })
 })
 
-test('apply registers the sixteen email tools even without config', () => {
+test('product apply registers exactly five read tools without optional services', () => {
   const ctx = fakeCtx()
   apply(ctx, {})
-  const names = ctx.tools.defs.map(def => def.name).sort()
-  assert.deepEqual(names, ['email_attachment', 'email_draft', 'email_folder_create', 'email_folder_delete', 'email_folder_purge', 'email_folder_rename', 'email_folders', 'email_health', 'email_list', 'email_mark', 'email_read', 'email_reply', 'email_schedule', 'email_search', 'email_send', 'email_watch'])
+  assert.deepEqual(ctx.tools.defs.map(def => def.name).sort(), READ_TOOLS)
+  assert.equal(ctx.listeners.some(listener => listener.event === 'tools/pre-execute'), false,
+    'product apply must not install upstream send, schedule or folder approval gates')
+})
+
+test('product apply adds reply suggestions and bounded activity reads when required services exist', () => {
+  const ctx = fakeCtx()
+  ctx.inject = (services, callback) => {
+    if (services.join(',') !== 'sessionController,sessions,configEditor') return
+    callback({ sessionController: {}, sessions: {}, configEditor: {}, tools: ctx.tools, effect: ctx.effect.bind(ctx) })
+  }
+  apply(ctx, {})
+  assert.deepEqual(ctx.tools.defs.map(def => def.name).sort(), [...READ_TOOLS, 'email_suggest_reply', 'email_activity'].sort())
+  const suggestion = ctx.tools.defs.find(def => def.name === 'email_suggest_reply')
+  assert.deepEqual(suggestion.parameters.required, ['uid'])
+  assert.equal(suggestion.timeoutMs, 120000)
+  assert.equal(ctx.listeners.some(listener => listener.event === 'tools/pre-execute'), false)
+})
+
+test('product apply omits reply suggestions when any required host service is missing', () => {
+  for (const missing of ['sessionController', 'sessions', 'configEditor', 'tools']) {
+    const ctx = fakeCtx()
+    ctx.inject = (services, callback) => {
+      if (services.join(',') !== 'sessionController,sessions,configEditor') return
+      const host = { sessionController: {}, sessions: {}, configEditor: {}, tools: ctx.tools }
+      delete host[missing]
+      callback(host)
+    }
+    apply(ctx, {})
+    assert.deepEqual(ctx.tools.defs.map(def => def.name).sort(), READ_TOOLS, missing)
+  }
 })
 
 test('every tool returns a config hint instead of throwing when unconfigured', async () => {
   const ctx = fakeCtx()
-  apply(ctx, {})
+  installUpstreamFixture(ctx, {})
   const list = ctx.tools.defs.find(def => def.name === 'email_list')
   await assert.rejects(() => list.execute({}), /邮件账号配置不完整/)
   const folders = ctx.tools.defs.find(def => def.name === 'email_folders')
@@ -94,7 +138,7 @@ test('every tool returns a config hint instead of throwing when unconfigured', a
 
 test('execute validates args without touching the network', async () => {
   const ctx = fakeCtx()
-  apply(ctx, QQ)
+  installUpstreamFixture(ctx, QQ)
   const read = ctx.tools.defs.find(def => def.name === 'email_read')
   await assert.rejects(() => read.execute({ uid: -1 }), /uid 必须是正整数/)
   const search = ctx.tools.defs.find(def => def.name === 'email_search')
@@ -117,7 +161,7 @@ test('email_send runs the approval round-trip with recipient, subject and attach
   const ctx = fakeCtx()
   const seen = []
   ctx.approval.request = async (req) => { seen.push(req); return 'allowed-once' }
-  apply(ctx, QQ)
+  installUpstreamFixture(ctx, QQ)
   const gate = ctx.listeners.find(l => l.event === 'tools/pre-execute')
   assert.ok(gate)
   assert.equal(gate.opts.prepend, true)
@@ -133,7 +177,7 @@ test('email_send runs the approval round-trip with recipient, subject and attach
 
 test('other tools pass through the gate untouched', async () => {
   const ctx = fakeCtx()
-  apply(ctx, QQ)
+  installUpstreamFixture(ctx, QQ)
   const gate = ctx.listeners.find(l => l.event === 'tools/pre-execute')
   for (const tool of ['email_list', 'email_attachment', 'email_folders', 'email_mark']) {
     const out = await gate.fn({ name: tool, arguments: {} }, async () => 'PASSED-THROUGH')
@@ -146,7 +190,7 @@ test('email_reply goes through the same approval gate with actual recipients and
   const ctx = fakeCtx()
   const seen = []
   ctx.approval.request = async (req) => { seen.push(req); return 'allowed-once' }
-  apply(ctx, QQ)
+  installUpstreamFixture(ctx, QQ)
   const gate = ctx.listeners.find(l => l.event === 'tools/pre-execute')
   const out = await gate.fn(
     { name: 'email_reply', arguments: { uid: 42, text: '收到', mode: 'forward', to: 'boss@corp.com' } },
@@ -164,7 +208,7 @@ test('email_reply goes through the same approval gate with actual recipients and
 
 test('sendApproval: false in the live settings skips the ask', async () => {
   const ctx = fakeCtx({ sendApproval: false })
-  apply(ctx, QQ)
+  installUpstreamFixture(ctx, QQ)
   const gate = ctx.listeners.find(l => l.event === 'tools/pre-execute')
   const out = await gate.fn({ name: 'email_send', arguments: { to: 'x@y.z', subject: 's' } }, async () => 'PASSED-THROUGH')
   assert.equal(out, 'PASSED-THROUGH')
@@ -172,7 +216,7 @@ test('sendApproval: false in the live settings skips the ask', async () => {
 
 test('gate passes through when the account is not configured', async () => {
   const ctx = fakeCtx()
-  apply(ctx, {})
+  installUpstreamFixture(ctx, {})
   const gate = ctx.listeners.find(l => l.event === 'tools/pre-execute')
   const out = await gate.fn({ name: 'email_send', arguments: { to: 'x@y.z', subject: 's' } }, async () => 'PASSED-THROUGH')
   assert.equal(out, 'PASSED-THROUGH')
@@ -221,7 +265,7 @@ test('validateAttachmentPaths stats files and enforces the total cap', async () 
 test('approval "rejected" denies with an actionable message covering Full Access', async () => {
   const ctx = fakeCtx()
   ctx.approval.request = async () => 'rejected'
-  apply(ctx, QQ)
+  installUpstreamFixture(ctx, QQ)
   const gate = ctx.listeners.find(l => l.event === 'tools/pre-execute')
   const decision = await gate.fn(
     { name: 'email_send', arguments: { to: 'boss@corp.com', subject: 's' } },
@@ -236,7 +280,7 @@ test('reply denial explains the default-off trusted reply switch and offers Draf
   t.mock.method(EmailService.prototype,'prepareReply',async()=>({account:'default',to:'sender@example.test',cc:'',subject:'fixture',text:'body'}))
   const ctx = fakeCtx()
   ctx.approval.request = async () => 'rejected'
-  apply(ctx, QQ)
+  installUpstreamFixture(ctx, QQ)
   const gate = ctx.listeners.find(l => l.event === 'tools/pre-execute')
   const decision = await gate.fn({ name: 'email_reply', arguments: { uid: 1, text: 'fixture reply' } }, async () => assert.fail('must stay denied'))
   assert.equal(decision.kind, 'deny')
@@ -247,7 +291,7 @@ test('reply denial explains the default-off trusted reply switch and offers Draf
 test('approval "allowed-once" proceeds to the tool', async () => {
   const ctx = fakeCtx()
   ctx.approval.request = async () => 'allowed-once'
-  apply(ctx, QQ)
+  installUpstreamFixture(ctx, QQ)
   const gate = ctx.listeners.find(l => l.event === 'tools/pre-execute')
   const out = await gate.fn({ name: 'email_send', arguments: { to: 'x@y.z', subject: 's' } }, async () => 'PASSED-THROUGH')
   assert.equal(out, 'PASSED-THROUGH')
@@ -256,7 +300,7 @@ test('approval "allowed-once" proceeds to the tool', async () => {
 test('sendApproval: false bypasses the approval round-trip entirely', async () => {
   const ctx = fakeCtx({ sendApproval: false })
   ctx.approval.request = async () => { throw new Error('must not be called') }
-  apply(ctx, QQ)
+  installUpstreamFixture(ctx, QQ)
   const gate = ctx.listeners.find(l => l.event === 'tools/pre-execute')
   const out = await gate.fn({ name: 'email_send', arguments: { to: 'x@y.z', subject: 's' } }, async () => 'PASSED-THROUGH')
   assert.equal(out, 'PASSED-THROUGH')
@@ -265,7 +309,7 @@ test('sendApproval: false bypasses the approval round-trip entirely', async () =
 test('no approval channel denies with the headless hint', async () => {
   const ctx = fakeCtx()
   ctx.approval = undefined
-  apply(ctx, QQ)
+  installUpstreamFixture(ctx, QQ)
   const gate = ctx.listeners.find(l => l.event === 'tools/pre-execute')
   const decision = await gate.fn({ name: 'email_send', arguments: { to: 'x@y.z', subject: 's' } }, async () => 'PASSED-THROUGH')
   assert.equal(decision.kind, 'deny')
@@ -273,9 +317,9 @@ test('no approval channel denies with the headless hint', async () => {
 })
 
 
-test('all sixteen public tools declare finite timeouts', () => {
+test('all sixteen retained upstream tools declare finite timeouts', () => {
   const ctx = fakeCtx()
-  apply(ctx, {})
+  installUpstreamFixture(ctx, {})
   const readmeTools = ['email_draft', 'email_list', 'email_read', 'email_search', 'email_send', 'email_schedule', 'email_folder_create', 'email_folder_delete', 'email_folder_purge', 'email_folder_rename', 'email_folders', 'email_attachment', 'email_health', 'email_watch', 'email_mark', 'email_reply']
   assert.deepEqual(ctx.tools.defs.map(def => def.name).sort(), [...readmeTools].sort())
   const slow = new Set(['email_search', 'email_watch', 'email_folder_purge'])

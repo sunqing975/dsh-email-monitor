@@ -4,6 +4,8 @@
 
 A DSH multi-provider email assistant based on [dsh-email](https://github.com/STARDUSTLC666/dsh-email), extended with background monitoring that opens AI conversations containing summaries, action items and suggested replies.
 
+The product now has two flows: automatically create a DSH conversation for new mail, or select an existing message and click **Generate reply suggestion**. The UI contains Mail, Accounts/settings and Activity. Activity shows monitor health, check times, automatic/manual submissions and linked sessions; removed sessions produce a notice while retaining their records. Sending, drafts, scheduling, mailbox mutations, rules and mail-command tasks are no longer registered in the application. Their upstream source remains for compatibility and maintenance. Read tools and the shared `email_suggest_reply` action remain available.
+
 ## Provider support
 
 Inherited mailbox access supports QQ, Tencent enterprise mail, 163, 126, Sina, Aliyun, Gmail, Outlook, iCloud and custom IMAP/SMTP servers, with POP3, OAuth and AgentMail options. Availability depends on account permissions, authentication policies and server protocols. This fork has not independently verified every provider.
@@ -25,13 +27,13 @@ pnpm run build
 
 Install the local package directory through DSH's plugin installation capability. The package name is `dsh-email-monitor`; upstream `tool-email` configuration, `email_*` tools and account storage identifiers are retained for compatibility. Use this as a replacement: **do not enable it alongside dsh-email**. Back up existing settings before migrating. Upstream update registration is disabled to prevent overwriting this extension.
 
-Configure a 163 account with its full email address and IMAP authorization code in DSH settings. Then enable `incomingMonitorEnabled` on `tool-email`. Optional settings: `incomingMonitorAccount`, `incomingMonitorFolder` (default `INBOX`), `incomingMonitorPollSeconds` (default `60`) and `incomingMonitorCwd`. See the [monitor setup and roadmap](docs/INCOMING-MONITOR.zh.md).
+Configure a 163 account with its full email address and IMAP authorization code in Accounts/settings, test the connection, then enable and save New-mail monitoring there. Select the account and an absolute conversation working directory; the default interval is 60 seconds. The controls persist the existing `tool-email` configuration fields: `incomingMonitorEnabled`, `incomingMonitorAccount`, `incomingMonitorFolder`, `incomingMonitorPollSeconds` and `incomingMonitorCwd`. See the [monitor setup and roadmap](docs/INCOMING-MONITOR.zh.md).
 
 Requires DSH `>=0.2.1-rc.3` and Node.js `^22.19.0 || >=24.0.0`. Real 163 login and end-to-end delivery still require verification with a configured user account.
 
 ## Validation
 
-Run `pnpm run build` and `pnpm test`. On macOS, use `TMPDIR=/private/tmp` if `/var` and `/private/var` temporary path canonicalization differs. Current suite: 516 tests, 514 passed, zero failed, two skipped. Monitor fixtures cover baselines, seen messages, batches, restarts, retries, persistence failures and UIDVALIDITY changes.
+Run `pnpm run build` and `pnpm test`. On macOS, use `TMPDIR=/private/tmp` if `/var` and `/private/var` temporary path canonicalization differs. Monitor fixtures cover baselines, seen messages, batches, restarts, retries, persistence failures and UIDVALIDITY changes. Manual suggestion fixtures cover retries, concurrent deduplication, account identity and session checkpoints.
 
 ## Attribution and license
 

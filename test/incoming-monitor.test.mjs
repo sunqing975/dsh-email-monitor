@@ -45,7 +45,7 @@ function fixture() {
     },
     async checkpoint() { if (f.flushFailure) throw new Error('flush failed') }, 
   }
-  f.restart = () => { f.core = createIncomingMonitorCore({ mailbox: f.mailbox, store: f.store, sessions: f.sessions, cwd: '/work', status: text => f.notices.push(text) }); return f.core }
+  f.restart = () => { f.core = createIncomingMonitorCore({ mailbox: f.mailbox, store: f.store, sessions: f.sessions, cwd: '/work', status: text => f.notices.push(text), activity: entry => f.activity?.(entry) }); return f.core }
   f.restart()
   f.poll = () => f.core.poll(f.signal)
   return f
@@ -210,13 +210,126 @@ test('installer is disabled by default and enabled polling starts only at appRea
     getEffectiveSettings: () => ({ defaultAccount: 'work', accounts: new Map([['work', { provider: '163', user: 'u', imap: { host: 'imap.163.com', port: 993 } }]]) }),
     getPool: () => ({ async withImap(name, folder, run) { return run({ mailbox: { uidValidity: 1 }, async search() { return [] } }) } }),
   }
-  installIncomingMonitor({ inject(names, fn) { assert.deepEqual(names, ['storage', 'sessionController', 'sessions', 'appReady']); fn(host) } }, runtime, { incomingMonitorEnabled: true, incomingMonitorPollSeconds: 1 })
+  installIncomingMonitor({ inject(names, fn) { assert.deepEqual(names, ['storage', 'sessionController', 'sessions']); fn(host) } }, runtime, { incomingMonitorEnabled: true, incomingMonitorPollSeconds: 1 })
   assert.equal(opened, undefined)
   ready()
   for (let i = 0; i < 20; i++) await Promise.resolve()
-  assert.equal(opened.name, 'dsh-email-incoming-monitor')
+  assert.equal(opened.name, 'dsh_email_incoming_monitor')
+  assert.match(opened.name, /^[a-z][a-z0-9_]*$/)
   assert.deepEqual(opened.tables, ['mailboxes'])
   dispose()
   for (let i = 0; i < 20; i++) await Promise.resolve()
   assert.equal(closed, 1)
+})
+
+test('activity tracks one request through session creation, failure and retry without private data', async () => {
+  const f = fixture(), entries = []
+  f.mailbox.account = 'work'; f.mailbox.folder = 'INBOX'
+  f.activity = async entry => { entries.push(clone(entry)) }
+  await f.poll()
+  assert.equal(entries[0].source, 'monitor'); assert.equal(entries[0].status, 'baseline')
+  f.uids.push(3); f.promptFailure = 'before'
+  await assert.rejects(f.poll(), /admitted/)
+  const failed = entries.at(-1)
+  assert.equal(failed.status, 'failed'); assert.equal(failed.sessionId, 's1')
+  assert.equal(failed.account, 'work'); assert.equal(failed.folder, 'INBOX'); assert.equal(failed.uid, 3)
+  f.restart(); f.promptFailure = undefined; await f.poll()
+  assert.equal(entries.at(-1).status, 'submitted')
+  assert.equal(entries.at(-1).id, failed.id)
+  assert.equal(entries.filter(entry => entry.source === 'automatic').every(entry => entry.id === failed.id), true)
+  assert.doesNotMatch(JSON.stringify(entries), /private subject|passwords|not admitted|Ignore rules/)
+})
+
+test('activity persistence failures reject the poll and keep the same pending request for retry', async () => {
+  const f = fixture(); await f.poll(); f.uids.push(3)
+  f.activity = async entry => { if (entry.sessionId) throw new Error('activity storage failed') }
+  await assert.rejects(f.poll(), AggregateError)
+  assert.equal(f.saved.uid, 2); assert.equal(f.saved.pending.sessionId, 's1'); assert.equal(f.prompts.length, 0)
+  f.activity = async () => {}; await f.poll()
+  assert.equal(f.creates.length, 1); assert.equal(f.saved.uid, 3)
+})
+
+function installFixture({ readiness = 'absent', enabled = true, broken = false, hanging = false } = {}) {
+  const f = { polls: 0, opened: 0, closed: 0, records: [], warnings: [], saved: {}, uids: [1], creates: [] }
+  f.activity = { monitor: {}, async record(entry) { f.records.push(clone(entry)) } }
+  f.config = { incomingMonitorEnabled: enabled, incomingMonitorCwd: '/first' }
+  const ready = { onReady(fn) { f.ready = fn; return () => { f.unsubscribed = true } } }
+  const host = {
+    effect(fn) { f.dispose = fn() },
+    logger: { info() {}, warn(message) { f.warnings.push(message) } },
+    storage: { backend: { names: () => ['kv'], get: () => ({ kv: { async open() {
+      f.opened++
+      return { async loadAll() { return { tables: { mailboxes: clone(f.saved) } } }, async putRecord(table, key, value) { f.saved[key] = clone(value) }, async close() { f.closed++ } }
+    } } }) } },
+    sessionController: {
+      async create({ cwd }) { f.creates.push(cwd); return { sessionId: 'session-' + f.creates.length } },
+      async rename() {}, async prompt() {},
+    },
+    sessions: { get: () => ({}), flush: async () => true },
+    ...(readiness === 'host' ? { appReady: ready } : {}),
+  }
+  const runtime = {
+    getEffectiveSettings: () => ({ defaultAccount: 'work', accounts: new Map([['work', { user: 'secret-user', imap: { host: 'imap.163.com', port: 993 } }]]) }),
+    getPool: () => ({
+      async withImap(name, folder, run, readOnly, signal) { f.polls++; f.signal = signal; if (hanging) await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); if (broken) throw new Error('secret-user secret-token'); return run({ mailbox: { uidValidity: 1 }, async search() { return f.uids } }) },
+      async read(name, uid) { return { uid, uidValidity: 1, attachments: [], subject: 'secret-subject', text: 'secret-body' } },
+    }),
+  }
+  installIncomingMonitor({ inject(names, fn) { assert.deepEqual(names, ['storage', 'sessionController', 'sessions']); fn(host) },
+    ...(readiness === 'get' ? { get(name) { assert.equal(name, 'appReady'); return ready } } : {}),
+  }, runtime, f.config, f.activity)
+  return f
+}
+const drain = async () => { for (let i = 0; i < 100; i++) await Promise.resolve() }
+
+for (const readiness of ['absent', 'host', 'get']) test(`optional readiness (${readiness}) starts once and exposes safe monitor status`, async () => {
+  const f = installFixture({ readiness })
+  try {
+    if (readiness !== 'absent') { assert.equal(f.polls, 0); assert.equal(f.activity.monitor.state, 'waiting'); f.ready(); f.ready() }
+    await drain()
+    assert.equal(f.polls, 1); assert.equal(f.activity.monitor.state, 'idle')
+    assert.ok(f.activity.monitor.lastCheckedAt); assert.ok(f.activity.monitor.nextCheckAt)
+    assert.equal(f.records[0].status, 'baseline'); assert.ok(f.signal instanceof AbortSignal)
+  } finally { f.dispose(); await drain() }
+  assert.equal(f.closed, 1)
+})
+
+test('disabled fallback does not open storage and failures surface safe status and activity', async () => {
+  const disabled = installFixture({ enabled: false }); await drain()
+  assert.equal(disabled.opened, 0); assert.equal(disabled.activity.monitor.state, 'disabled'); disabled.dispose()
+  const failed = installFixture({ broken: true }); await drain()
+  assert.equal(failed.activity.monitor.state, 'error'); assert.ok(failed.activity.monitor.nextCheckAt)
+  assert.equal(failed.records.at(-1).status, 'error')
+  assert.doesNotMatch(JSON.stringify([failed.activity.monitor, failed.records, failed.warnings]), /secret-user|secret-token/)
+  failed.dispose(); await drain()
+})
+
+test('poll deadline aborts upstream work and schedules a safe retry', async () => {
+  const original = globalThis.setTimeout, clear = globalThis.clearTimeout
+  const timers = []
+  globalThis.setTimeout = (fn, delay) => { const timer = { fn, delay, unref() {} }; timers.push(timer); return timer }
+  globalThis.clearTimeout = () => {}
+  let f
+  try {
+    f = installFixture({ hanging: true }); await drain()
+    assert.equal(f.activity.monitor.state, 'checking')
+    timers.find(timer => timer.delay === 120_000).fn(); await drain()
+    assert.equal(f.signal.aborted, true); assert.equal(f.activity.monitor.state, 'error')
+    assert.match(f.activity.monitor.message, /超时/); assert.ok(f.activity.monitor.nextCheckAt)
+  } finally { f?.dispose(); await drain(); globalThis.setTimeout = original; globalThis.clearTimeout = clear }
+})
+
+test('changing cwd recreates the core while preserving mailbox progress', async () => {
+  const original = globalThis.setTimeout, clear = globalThis.clearTimeout
+  const timers = []
+  globalThis.setTimeout = (fn, delay) => { const timer = { fn, delay, unref() {} }; timers.push(timer); return timer }
+  globalThis.clearTimeout = () => {}
+  let f
+  try {
+    f = installFixture(); await drain()
+    f.config.incomingMonitorCwd = '/second'; f.uids.push(2)
+    timers.findLast(timer => timer.delay === 60_000).fn(); await drain()
+    assert.deepEqual(f.creates, ['/second']); assert.equal(f.polls, 2)
+    assert.equal(f.records.at(-1).status, 'submitted')
+  } finally { f?.dispose(); await drain(); globalThis.setTimeout = original; globalThis.clearTimeout = clear }
 })

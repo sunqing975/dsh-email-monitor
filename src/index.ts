@@ -1,5 +1,8 @@
 import { installIncomingMonitor } from './incoming-monitor.js'
-import { installSendApproval } from './approval.js'
+import { createReplySuggestion } from './reply-suggestion.js'
+import { monitorControls } from './monitor-controls.js'
+import { ActivityLog } from './activity-log.js'
+import { randomUUID } from 'node:crypto'
 import type { EmailConfig } from './config.js'
 import { createEmailRuntime } from './runtime.js'
 import { buildEmailTools } from './tools.js'
@@ -7,12 +10,9 @@ import { EmailSettingsBackend, installEmailSettingsWeb } from './web.js'
 import { liveConfig, Config as ConfigSchema } from './host-config.js'
 import { installLegacySettingsImport } from './legacy-settings.js'
 import { EmailSettingsSchema, SETTINGS_NAMESPACE } from './settings.js'
-import { EmailDraftBackend, installEmailDrafts } from './draft-web.js'
 import { EmailMailboxBackend, installEmailMailbox } from './mailbox-web.js'
 import { EmailService, type MailDependencies } from './mail-service.js'
-import { installScheduleApproval } from './schedule-tool.js'
 import { disposeOAuthFlows } from './oauth2.js'
-import { MailTaskBackend, installMailTasks } from './mail-tasks.js'
 export const Config = ConfigSchema
 
 export const meta = {
@@ -25,7 +25,7 @@ export const name = 'tool-email'
 export const inject = ['settings', 'tools']
 export type Config = EmailConfig
 
-/** Compose settings/pool lifecycle, tools, browser routes and the outgoing-mail gate. */
+/** Compose mailbox reading, monitor settings and reply-suggestion conversations. */
 export function apply(ctx: any, config: Config = {}): void {
   installEmailApplication(ctx,config)
 }
@@ -45,17 +45,66 @@ export function installEmailApplication(ctx:any,config:Config={},dependencies:Ma
   const backend = new EmailSettingsBackend(ctx, runtime.settingsScope, config,dependencies.fetch)
   backend.watchImpl = runtime.watch
   installEmailSettingsWeb(ctx, backend)
-  const drafts = new EmailDraftBackend(runtime, backend)
-  ctx.inject?.(['appReady'],(host:any)=>{if(typeof host.appReady?.onReady==='function')host.appReady.onReady(()=>drafts.startScheduler())})
-  ctx.on?.('dispose',()=>drafts.stopScheduler())
   ctx.on?.('dispose',disposeOAuthFlows)
-  installEmailDrafts(ctx, drafts)
-  installEmailMailbox(ctx, new EmailMailboxBackend(runtime, drafts))
-  installMailTasks(ctx,new MailTaskBackend(runtime))
-  installIncomingMonitor(ctx, runtime, config)
-  for (const definition of buildEmailTools(runtime, drafts)) ctx.tools.register(definition)
-  installSendApproval(ctx, runtime)
-  installScheduleApproval(ctx,drafts)
+  const mailbox = new EmailMailboxBackend(runtime)
+  mailbox.assistantOnly = true
+  installEmailMailbox(ctx, mailbox)
+  const activity = new ActivityLog(ctx)
+  ctx.effect(() => () => activity.close())
+  installIncomingMonitor(ctx, runtime, config, activity)
+  const readTools = new Set(['email_list', 'email_read', 'email_search', 'email_folders', 'email_health'])
+  for (const definition of buildEmailTools(runtime)) if (readTools.has(definition.name)) {
+    if (definition.name === 'email_health') {
+      const execute = definition.execute
+      ctx.tools.register({ ...definition, execute: async (args: unknown, exec: unknown) => ({ ...(await execute(args, exec) as Record<string, unknown>), incomingMonitor: JSON.parse(JSON.stringify({ enabled: config.incomingMonitorEnabled === true, ...activity.monitor })) }) })
+    } else ctx.tools.register(definition)
+  }
+  ctx.inject?.(['sessionController', 'sessions', 'configEditor'], (host: any) => {
+    if (!host.sessionController || !host.sessions || !host.configEditor || !host.tools) return
+    const controls = monitorControls(host, runtime, config)
+    const suggest = createReplySuggestion(runtime, {
+      create: async (cwd: string) => (await host.sessionController.create({ cwd })).sessionId,
+      rename: (sessionId: string, title: string) => host.sessionController.rename({ sessionId, title }),
+      prompt: (sessionId: string, requestId: string, text: string, signal: AbortSignal) => host.sessionController.prompt({ sessionId, requestId, mode: 'queue', content: [{ type: 'text', text }] }, signal),
+      checkpoint: async (sessionId: string) => {
+        const session = host.sessions.get(sessionId)
+        if (!session || !await host.sessions.flush(session)) throw new Error('Session persistence checkpoint unavailable')
+      },
+    }, () => config.incomingMonitorCwd || process.cwd(), { activity })
+    const activityList = async (limit = 100) => ({ entries: (await activity.list()).slice(0, limit), monitor: JSON.parse(JSON.stringify(activity.monitor)) })
+    mailbox.assistantAction = async (body, signal) => {
+      if (body.action === 'suggest') return suggest(body as any, signal)
+      if (body.action === 'activityList') return activityList()
+      if (body.action === 'activitySession') {
+        const entry = (await activity.list()).find(row => row.id === body.id)
+        if (!entry?.sessionId) return { available: false, message: '这条记录尚未关联会话' }
+        try {
+          const projection = await host.sessionController.projections({ sessionId: entry.sessionId }, signal)
+          return projection ? { available: true, sessionId: entry.sessionId } : { available: false, message: '关联会话已被移除，处理记录仍然保留' }
+        } catch {
+          return { available: false, message: '暂时无法检查关联会话，请稍后重试' }
+        }
+      }
+      return controls(body)
+    }
+    host.effect?.(() => () => { mailbox.assistantAction = undefined })
+    host.tools.register({
+      name: 'email_activity',
+      description: '查看邮箱自动监听状态及自动、手动提交到 DSH 的近期处理记录。已提交表示请求被接收，生成结果请查看关联会话。',
+      parameters: { type: 'object', properties: { limit: { type: 'integer', description: '最多返回的记录数，1–100，默认20' } }, additionalProperties: false },
+      output: { schema: { type: 'object' }, render: (_args: unknown, value: any) => [{ type: 'text', text: JSON.stringify(value) }] },
+      timeoutMs: 30000,
+      execute: (args: any) => activityList(Number.isInteger(args?.limit) ? Math.max(1, Math.min(100, args.limit)) : 20),
+    })
+    host.tools.register({
+      name: 'email_suggest_reply',
+      description: '为选定的已有邮件创建 DSH 对话，生成摘要、行动项和回复示例，返回会话编号。',
+      parameters: { type: 'object', properties: { account: { type: 'string', description: '账户名称；省略使用默认账户' }, folder: { type: 'string', description: '邮件文件夹；省略使用账户收件箱' }, uid: { oneOf: [{ type: 'integer' }, { type: 'string' }], description: 'email_list 或 email_search 返回的邮件标识' }, requestId: { type: 'string', description: '可选重试标识；相同请求重试复用同一会话' } }, required: ['uid'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { sessionId: { type: 'string' } }, required: ['sessionId'] }, render: (_args: unknown, value: any) => [{ type: 'text', text: '回复建议已提交至 DSH 会话：' + value.sessionId }] },
+      timeoutMs: 120000,
+      execute: (args: any, exec: any) => suggest({ ...args, requestId: args.requestId || randomUUID() }, exec?.signal ?? new AbortController().signal),
+    })
+  })
 }
 
 export { clampInt, defaultDownloadDir, EMAIL_PASSWORD_ENV, isOAuth2Account, OUTLOOK_OAUTH2_CLIENT_ID, OUTLOOK_PROVIDER, parseAccountsYaml, parseServerPresets, presetNamesIn, providerNames, PROVIDER_NAMES, resolveEmailConfig, resolveEmailSettings, serializeAccountsYaml } from './config.js'

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { apply, EmailPool, SETTINGS_ROUTE } from '../lib/index.js'
 
-test('apply shares watch behavior with the web route and releases owned resources', async (t) => {
+test('apply keeps browser watch working without an email_watch tool and releases owned resources', async (t) => {
   let rows = [{ uid: 1 }]
   let disposedPools = 0
   t.mock.method(EmailPool.prototype, 'startIdleSweep', () => {})
@@ -27,7 +27,8 @@ test('apply shares watch behavior with the web route and releases owned resource
     effect,
     on() {},
     get() { return undefined },
-    inject(_services, callback) {
+    inject(services, callback) {
+      if (!services.includes('webServer')) return
       callback({ effect, webServer: { register(route) {
         routes.push(route)
         return () => removedRoutes.push(route.path)
@@ -36,7 +37,9 @@ test('apply shares watch behavior with the web route and releases owned resource
   }
   apply(ctx, config)
   t.after(() => cleanups.reverse().forEach(cleanup => cleanup()))
-  const watch = definitions.find(definition => definition.name === 'email_watch')
+  assert.deepEqual(definitions.map(definition => definition.name).sort(),
+    ['email_folders', 'email_health', 'email_list', 'email_read', 'email_search'])
+  assert.equal(definitions.some(definition => definition.name === 'email_watch'), false)
   const route = routes.find(route => route.path === SETTINGS_ROUTE)
   const webWatch = async () => {
     const req = {
@@ -57,10 +60,8 @@ test('apply shares watch behavior with the web route and releases owned resource
     assert.equal(body.ok, true)
     return body.value
   }
-  assert.equal((await watch.execute({})).firstRun, true)
   assert.equal((await webWatch()).firstRun, true)
   rows = [{ uid: 2 }, { uid: 1 }]
-  assert.equal((await watch.execute({})).newCount, 1)
   assert.equal((await webWatch()).newCount, 1)
   cleanups.reverse().forEach(cleanup => cleanup())
   cleanups.length = 0

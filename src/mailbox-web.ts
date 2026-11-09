@@ -31,12 +31,15 @@ const json = (status: number, value: unknown) =>
     },
   })
 export class EmailMailboxBackend {
+  /** Optional focused assistant operations; live monitor assembly restricts legacy mutations. */
+  assistantAction?: (body: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
+  assistantOnly = false
   private moves = new Map<string, MoveTicket>()
   private images = new Map<string, ImageTicket>()
   private folderTickets = new Map<string, FolderTicket>()
   constructor(
     private runtime: Pick<EmailRuntime, 'getEffectiveSettings' | 'getPool'>,
-    private drafts: EmailDraftBackend,
+    private drafts?: EmailDraftBackend,
     private download: typeof downloadPublicBytes = downloadPublicBytes,
   ) {}
   private fingerprint(account: string) {
@@ -82,6 +85,11 @@ export class EmailMailboxBackend {
     body: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<unknown> {
+    if (['suggest', 'monitorGet', 'monitorSave', 'activityList', 'activitySession'].includes(String(body.action))) {
+      if (!this.assistantAction) throw new Error('邮件助手暂不可用，请检查 DSH 会话服务 / Email assistant is unavailable')
+      return this.assistantAction(body, signal ?? new AbortController().signal)
+    }
+    if (this.assistantOnly && !['accounts', 'folders', 'list', 'read'].includes(String(body.action))) throw new Error('邮件助手仅提供阅读与回复建议 / Only reading and reply suggestions are available')
     const settings = this.runtime.getEffectiveSettings(),
       account =
         typeof body.account === 'string' && body.account
@@ -228,6 +236,7 @@ export class EmailMailboxBackend {
       )
     }
     if (body.action === 'replyDraft') {
+      if (!this.drafts) throw new Error('Drafts are not enabled')
       const original = await pool.read(account, uid, folder, signal),
         mode = body.replyAll === true ? 'reply-all' : 'reply'
       this.unchanged(account, accountFingerprint)
@@ -323,6 +332,7 @@ export class EmailMailboxBackend {
         request.signal,
         AbortSignal.timeout(120000),
       ])
+      if (this.assistantOnly && ['image', 'download'].includes(body.action)) return fail(403)
       if (body.action === 'image') return await this.imageBytes(body, signal)
       if (body.action === 'download') {
         // The authenticated file action owns only the copy created by this call.

@@ -1,8 +1,12 @@
 import type { EmailRuntime } from './runtime.js';
 import type { EmailReadResult } from './types.js';
+import type { ActivityLog } from './activity-log.js';
+type ActivityInput = Parameters<ActivityLog['record']>[0];
 /** Provider-neutral boundary; snapshots must contain ALL current message IDs, including read mail. */
 export interface IncomingMailbox {
     key: string;
+    account?: string;
+    folder?: string;
     snapshot(signal: AbortSignal): Promise<{
         uidValidity: number;
         uids: number[];
@@ -36,9 +40,11 @@ export declare function createIncomingMonitorCore(options: {
     sessions: IncomingSessions;
     cwd: string;
     status?: (message: string) => void;
+    activity?: (entry: ActivityInput) => Promise<void>;
 }): {
     poll(signal: AbortSignal): Promise<void>;
 };
 /** Reuse the upstream service and its connection queue; never instantiate a second IMAP client. */
 export declare function incomingMailbox(runtime: EmailRuntime, accountName: string, folder: string): IncomingMailbox;
-export declare function installIncomingMonitor(ctx: any, runtime: EmailRuntime, config: any): void;
+export declare function installIncomingMonitor(ctx: any, runtime: EmailRuntime, config: any, activity?: ActivityLog): void;
+export {};
