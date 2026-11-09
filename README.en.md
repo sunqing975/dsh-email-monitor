@@ -1,84 +1,40 @@
-[简体中文](README.md) · **English**
+# dsh-email-monitor
 
-# Email
+[简体中文](README.md)
 
-**Handle mail in DSH and review replies before sending.**
+A DSH multi-provider email assistant based on [dsh-email](https://github.com/STARDUSTLC666/dsh-email), extended with background monitoring that opens AI conversations containing summaries, action items and suggested replies.
 
-[![npm](https://img.shields.io/npm/v/dsh-email)](https://www.npmjs.com/package/dsh-email) [![downloads](https://raw.githubusercontent.com/STARDUSTLC666/dsh-suite/npm-downloads/assets/dsh-email-downloads.svg)](https://www.npmjs.com/package/dsh-email) [![total downloads](https://raw.githubusercontent.com/STARDUSTLC666/dsh-suite/npm-downloads/assets/dsh-email-total-downloads.svg)](https://www.npmjs.com/package/dsh-email)
+## Provider support
 
-**[Install](#install) · [Workflow](#start-using-it) · [Full guide](https://github.com/STARDUSTLC666/dsh-email/blob/main/docs/REFERENCE.en.md)**
+Inherited mailbox access supports QQ, Tencent enterprise mail, 163, 126, Sina, Aliyun, Gmail, Outlook, iCloud and custom IMAP/SMTP servers, with POP3, OAuth and AgentMail options. Availability depends on account permissions, authentication policies and server protocols. This fork has not independently verified every provider.
 
-<picture>
-  <source media="(prefers-color-scheme: dark) and (max-width: 640px)" srcset="https://raw.githubusercontent.com/STARDUSTLC666/dsh-email/main/docs/assets/intro/workflow-en-mobile-dark.svg">
-  <source media="(max-width: 640px)" srcset="https://raw.githubusercontent.com/STARDUSTLC666/dsh-email/main/docs/assets/intro/workflow-en-mobile-light.svg">
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/STARDUSTLC666/dsh-email/main/docs/assets/intro/workflow-en-dark.svg">
-  <img src="https://raw.githubusercontent.com/STARDUSTLC666/dsh-email/main/docs/assets/intro/workflow-en-light.svg" alt="Handle mail in DSH and review replies before sending. · workflow illustration" width="100%">
-</picture>
+**The new automatic monitoring feature currently accepts 163 IMAP only.** Other providers and simultaneous multi-account monitoring remain planned. IM notifications are not implemented; output appears in DSH conversations.
 
-## Features
+Monitoring polls every 60 seconds by default, skips existing mail on its initial successful scan and detects newly arrived mail regardless of read status. Progress is persisted, and the session is flushed before advancing the mailbox cursor. It produces suggested reply text without sending it or downloading attachments. DSH must remain running with network and model access. Mail content is processed by the model and stored in session history.
 
-Version 0.23 adds safe HTML send/reply/draft previews, reviewed scheduled sends, explicit Google OAuth, Tencent enterprise mail presets, localized reply quotations and optional mail-triggered DSH tasks. See the [workflow and operating boundaries](docs/OUTGOING-AUTOMATION.en.md). Existing Gmail app-password accounts continue to work. Scheduling requires a running DSH; task execution and automatic result replies are opt-in.
+## Build and install
 
-- Use IMAP/POP3/SMTP, Outlook OAuth or AgentMail accounts.
-- Read messages, search and download attachments in the workbench.
-- Review the sender, To/Cc, content and attachments before confirming.
-
-<details>
-<summary>See a workbench example</summary>
-
-![workbench example](https://raw.githubusercontent.com/STARDUSTLC666/dsh-email/main/docs/assets/intro/screen-en.webp)
-
-Actual interface with controlled validation data; the PPTX image is a rendered sample when shown.
-
-</details>
-
-Formatted reading, longer quoted replies, and IMAP single/bulk Trash with Undo: see the [mailbox workflow](docs/MAILBOX.en.md). You choose whether to load external images and confirm moves before they run.
-
-## Install
-
-Open **Plugins** in the DSH desktop app and install `dsh-email`. If the CLI is available:
+This is currently a source build, not an npm release:
 
 ```bash
-dsh plugin --profile desktop add dsh-email
+git clone https://github.com/sunqing975/dsh-email-monitor.git
+cd dsh-email-monitor
+pnpm install --ignore-scripts
+pnpm run build
 ```
 
-For the web profile, replace `desktop` with `web`. Restart that DSH profile after installation. The package’s DSH requirement is `>=0.2.1-rc.3`.
+Install the local package directory through DSH's plugin installation capability. The package name is `dsh-email-monitor`; upstream `tool-email` configuration, `email_*` tools and account storage identifiers are retained for compatibility. Use this as a replacement: **do not enable it alongside dsh-email**. Back up existing settings before migrating. Upstream update registration is disabled to prevent overwriting this extension.
 
-## Start using it
+Configure a 163 account with its full email address and IMAP authorization code in DSH settings. Then enable `incomingMonitorEnabled` on `tool-email`. Optional settings: `incomingMonitorAccount`, `incomingMonitorFolder` (default `INBOX`), `incomingMonitorPollSeconds` (default `60`) and `incomingMonitorCwd`. See the [monitor setup and roadmap](docs/INCOMING-MONITOR.zh.md).
 
-1. Open Email account settings and configure your own IMAP/SMTP, OAuth or AgentMail account.
-2. Test the connection, select an account and browse Inbox and Sent in the mail workbench.
-3. Search and open a message, inspect its body and attachments, then ask for a reply draft without sending.
-4. Edit, save and preview the draft; verify To/Cc, attachments and sending account before confirming.
-5. Verify the result in Sent or the original thread. Recipient deny rules continue to take precedence.
+Requires DSH `>=0.2.1-rc.3` and Node.js `^22.19.0 || >=24.0.0`. Real 163 login and end-to-end delivery still require verification with a configured user account.
 
-Example request：
+## Validation
 
-> Read this message and prepare a reply draft. Do not send it yet.
+Run `pnpm run build` and `pnpm test`. On macOS, use `TMPDIR=/private/tmp` if `/var` and `/private/var` temporary path canonicalization differs. Current suite: 516 tests, 514 passed, zero failed, two skipped. Monitor fixtures cover baselines, seen messages, batches, restarts, retries, persistence failures and UIDVALIDITY changes.
 
-## Before you start
+## Attribution and license
 
-Bring your mailbox authorization or AgentMail API key. POP3 has protocol-specific state and search limits. When the network only reaches a mail server through a proxy, add `proxy` to the account (or set `HTTPS_PROXY`); see the [usage guide](https://github.com/STARDUSTLC666/dsh-email/blob/main/docs/USAGE.en.md).
+Based on [STARDUSTLC666/dsh-email](https://github.com/STARDUSTLC666/dsh-email) v0.24.0, commit `1e5ee558bf799ab201a8b9e67a40fdd036bf1d66`. The upstream [MIT license and copyright notice](LICENSE) are retained. This fork adds incoming-mail monitoring, summary prompts and durable progress management.
 
-Configuration, detailed tools and troubleshooting: [full reference](https://github.com/STARDUSTLC666/dsh-email/blob/main/docs/REFERENCE.en.md).
-
-## Plugin updates
-
-Check updates at the bottom of the workbench or native plugin details. Automatic checks are on by default; **automatic installation is off**. You choose whether to install and when to restart. Suite-managed components update with their bundle. [Update behavior](https://github.com/STARDUSTLC666/dsh-email/blob/main/docs/REFERENCE.en.md).
-
-## Documentation
-
-- [Full usage, configuration and limits](https://github.com/STARDUSTLC666/dsh-email/blob/main/docs/REFERENCE.en.md)
-- [Release notes](https://github.com/STARDUSTLC666/dsh-email/blob/main/CHANGELOG.md)
-- [Validation scope and history](https://github.com/STARDUSTLC666/dsh-email/blob/main/docs/VALIDATION.md)
-
-## Feedback and contributions
-
-If the plugin helps, a Star makes it easier for others to discover. Report problems or suggest improvements in [Issues](https://github.com/STARDUSTLC666/dsh-email/issues); code and documentation [PRs](https://github.com/STARDUSTLC666/dsh-email/pulls) are welcome. Include versions and reproduction steps, and remove credentials from reports.
-
-## License
-
-[MIT](https://github.com/STARDUSTLC666/dsh-email/blob/main/LICENSE)
-
-<a id="what-it-does"></a>
-<a id="requirements-and-configuration"></a>
+Inherited functionality is documented in the [upstream reference](docs/REFERENCE.en.md). Those documents retain upstream context; use this README for installation and monitoring scope. Report issues at [sunqing975/dsh-email-monitor](https://github.com/sunqing975/dsh-email-monitor/issues).

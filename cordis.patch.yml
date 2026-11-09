@@ -25,5 +25,5 @@
 #       smtp: { host: smtp.corp.example, port: 465, secure: true }
 - insert:
     - id: tool-email
-      name: dsh-email
+      name: dsh-email-monitor
       config: {}

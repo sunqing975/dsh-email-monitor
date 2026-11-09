@@ -1,5 +1,5 @@
 // Editable browser entry. Build with node scripts/build-client.mjs.
-window.__ModuleLoader__.load({ id: "dsh-email", factory: (require) => {
+window.__ModuleLoader__.load({ id: "dsh-email-monitor", factory: (require) => {
         var module = { exports: {} };
         var exports = module.exports;
         "use strict";

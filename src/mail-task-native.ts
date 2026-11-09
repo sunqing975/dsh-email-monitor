@@ -43,6 +43,6 @@ export function nativeMailTasks(ctx: any): MailTaskNative {
             }
         },
         state: (sessionId, signal) => ctx.sessionController.state({ sessionId }, signal),
-        async prompt(sessionId, requestId, text, signal) { await ctx.sessionController.prompt({ sessionId, requestId, content: [{ type: 'text', text }], mode: 'followup' }, signal); },
+        async prompt(sessionId, requestId, text, signal) { await ctx.sessionController.prompt({ sessionId, requestId, content: [{ type: 'text', text }], mode: 'queue' }, signal); },
     };
 }

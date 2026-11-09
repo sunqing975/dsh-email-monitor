@@ -1,85 +1,64 @@
-**简体中文** · [English](README.en.md)
+# dsh-email-monitor
 
-# Email
+[English](README.en.md)
 
-**在 DSH 里处理邮件，确认后再发出回复。**
+基于 [dsh-email](https://github.com/STARDUSTLC666/dsh-email) 的 DSH 多邮箱助手，新增后台邮件监控：新邮件自动创建 AI 会话，生成中文摘要、待办事项和回复建议。
 
-[![npm](https://img.shields.io/npm/v/dsh-email)](https://www.npmjs.com/package/dsh-email) [![downloads](https://raw.githubusercontent.com/STARDUSTLC666/dsh-suite/npm-downloads/assets/dsh-email-downloads.svg)](https://www.npmjs.com/package/dsh-email) [![total downloads](https://raw.githubusercontent.com/STARDUSTLC666/dsh-suite/npm-downloads/assets/dsh-email-total-downloads.svg)](https://www.npmjs.com/package/dsh-email)
+## 邮箱支持范围
 
-**[安装使用](#安装) · [使用流程](#开始使用) · [完整说明](https://github.com/STARDUSTLC666/dsh-email/blob/main/docs/REFERENCE.zh.md)**
+本项目保留上游邮件接入、工作台、搜索、附件、草稿及确认发送能力。**邮件接入支持范围与新增自动监控的开放范围不同。**
 
-<picture>
-  <source media="(prefers-color-scheme: dark) and (max-width: 640px)" srcset="https://raw.githubusercontent.com/STARDUSTLC666/dsh-email/main/docs/assets/intro/workflow-zh-mobile-dark.svg">
-  <source media="(max-width: 640px)" srcset="https://raw.githubusercontent.com/STARDUSTLC666/dsh-email/main/docs/assets/intro/workflow-zh-mobile-light.svg">
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/STARDUSTLC666/dsh-email/main/docs/assets/intro/workflow-zh-dark.svg">
-  <img src="https://raw.githubusercontent.com/STARDUSTLC666/dsh-email/main/docs/assets/intro/workflow-zh-light.svg" alt="在 DSH 里处理邮件，确认后再发出回复。 · 流程示意" width="100%">
-</picture>
+| 能力 | 当前支持范围 |
+| --- | --- |
+| 邮箱接入与日常邮件操作（继承上游） | QQ、腾讯企业邮、163、126、新浪、阿里云、Gmail、Outlook、iCloud，以及自定义 IMAP/SMTP 企业邮箱；另有 POP3、OAuth 和 AgentMail 接入 |
+| 后台自动监控 → 新会话摘要、待办、建议回复（本项目新增） | 首期开放 163 IMAP；其他邮箱适配和真实收件验证待完成 |
+| IM 通知 | 暂未实现；结果显示在 DSH 会话中 |
 
-## 功能
+上述接入能力继承自上游，具体可用性取决于服务器协议、账户权限和认证策略；本项目未逐一完成所有品牌的实机验证。Google OAuth 需自行配置客户端；Outlook 默认客户端及授权边界见[上游参考说明](docs/REFERENCE.zh.md)。
 
-- 使用 IMAP / POP3 / SMTP、Google / Outlook OAuth 或 AgentMail 账号，提供腾讯企业邮预设。
-- 在工作台浏览邮件、搜索并下载附件。
-- 管理 IMAP 自建文件夹：创建、重命名，预览并单独确认清空，只删除空文件夹；系统目录受保护。
-- 编辑 HTML 或纯文本回复与草稿，核对发件账号、To/Cc、正文和附件后立即发送或定时发送。
-- 可选「邮件任务」：从授权邮箱给允许的工作区发起 DSH 任务，并接续原会话；默认关闭。
+## 自动监控
 
-新增功能的完整流程和边界见[图文邮件、定时发送与邮件任务](docs/OUTGOING-AUTOMATION.md)。Gmail OAuth 需自行创建 Google Desktop app 客户端；应用密码是否可用仍取决于账号策略。定时发送需保持 DSH 运行；自动邮件任务与结果回复均须主动启用。
+- 默认每 60 秒检查指定账户的收件箱；首次成功检查仅建立基线，跳过历史邮件。
+- 每封新邮件创建一个 DSH 会话，生成摘要、待办与建议回复文本，已读状态不影响检测。
+- 保存监控进度并在失败后重试；先确认会话持久化，再推进邮件游标。
+- 不自动发送回复，不自动解析或下载附件；IM 暂未接入。
+- 需要 DSH 主进程持续运行、网络可用以及已配置的模型；邮件正文会交给模型并保存在会话记录中。
 
-<details>
-<summary>查看实际示例</summary>
+完整配置、限制和待办见 [163 监控使用说明](docs/INCOMING-MONITOR.zh.md)。QQ、企业邮箱、OAuth、多账户同时监控和可选 IM 通知均在后续计划中。
 
-![workbench example](https://raw.githubusercontent.com/STARDUSTLC666/dsh-email/main/docs/assets/intro/screen-zh.webp)
+## 安装与配置
 
-图片来自验证环境的真实界面或示例 PPTX 渲染，使用示例数据。
-
-</details>
-
-图文阅读、长原文回复，以及 IMAP 单封 / 批量移入废纸篓与撤销，见[邮箱操作流程](docs/MAILBOX.md)。外部图片由你选择加载，邮件整理先预览确认。
-
-## 安装
-
-在 DSH 桌面版「插件」面板安装 `dsh-email`。已配置命令行时也可使用：
+当前版本为源码构建版本，尚未发布到 npm。克隆本仓库后安装依赖并构建：
 
 ```bash
-dsh plugin --profile desktop add dsh-email
+git clone https://github.com/sunqing975/dsh-email-monitor.git
+cd dsh-email-monitor
+pnpm install --ignore-scripts
+pnpm run build
 ```
 
-网页版把 `desktop` 改为 `web`；安装后重启对应的 DSH。宿主要求以包声明 `>=0.2.1-rc.3` 为准。
+然后通过 DSH 插件安装能力安装本地包目录。包名为 `dsh-email-monitor`。本扩展保留上游 `tool-email` 配置条目、`email_*` 工具和账户存储标识，作为上游插件的替代版本使用；**不要与原版 dsh-email 同时启用**。已有账户迁移前请备份配置。上游自动更新注册已关闭，防止更新覆盖监控扩展。
 
-## 开始使用
+1. 在网易邮箱网页开启 IMAP 服务，取得授权码。
+2. 在 DSH 邮件设置中添加 `163` 账户，填写完整邮箱地址和 IMAP 授权码，测试连接。不要把授权码发到聊天或提交到仓库。
+3. 在 `tool-email` 配置中打开 `incomingMonitorEnabled`；`incomingMonitorAccount` 留空使用默认账户，`incomingMonitorFolder` 默认 `INBOX`，`incomingMonitorPollSeconds` 默认 `60`。
+4. 设置 `incomingMonitorCwd` 为新会话工作目录。首次基线建立后，发送测试邮件验证自动会话。
 
-1. 打开“邮件”的账号设置，选择自己的 IMAP/SMTP、OAuth 或 AgentMail 账号并填写授权信息。
-2. 测试连接，选择要使用的账号，再从“收发邮件”读取收件箱和已发送。
-3. 搜索并打开邮件，核对正文与附件；可让助手“准备回复，先不要发送”。
-4. 到“草稿”编辑、保存和检查预览，核对 To/Cc、附件和发信账号后再确认发送。
-5. 在已发送或原邮件线程中核对结果；收件人禁止规则始终优先。
+要求：DSH `>=0.2.1-rc.3`；Node.js `^22.19.0 || >=24.0.0`。真实 163 登录和端到端收件仍需要配置用户授权码后验证。
 
-可以这样说：
+## 开发验证
 
-> 读取这封邮件，准备一封回复草稿，先不要发送。
+```bash
+pnpm run build
+pnpm test
+```
 
-## 开始前要知道
+macOS 如果系统临时目录的 `/var` 与 `/private/var` 真实路径不同，可设置 `TMPDIR=/private/tmp` 运行测试。当前测试结果：516 项，514 通过、0 失败、2 跳过。新增监控测试覆盖首次基线、已读新邮件、批量收件、重启恢复、失败重试、持久化失败和 UIDVALIDITY 变化。
 
-需要自己的邮箱授权或 AgentMail API Key；POP3 的状态与搜索范围按协议说明。网络必须经代理才能连上邮箱服务器时，给账号加 `proxy`（或用 `HTTPS_PROXY`），见[使用说明](https://github.com/STARDUSTLC666/dsh-email/blob/main/docs/USAGE.md)。
+## 上游与许可证
 
-配置、完整工具与排错见[详细使用说明](https://github.com/STARDUSTLC666/dsh-email/blob/main/docs/REFERENCE.zh.md)。
+本项目基于 [STARDUSTLC666/dsh-email](https://github.com/STARDUSTLC666/dsh-email) v0.24.0（提交 `1e5ee558bf799ab201a8b9e67a40fdd036bf1d66`）修改，感谢上游作者与贡献者。保留其 [MIT 许可证和版权声明](LICENSE)。本项目新增后台监控、会话摘要提示及持久化进度管理，包名调整为 `dsh-email-monitor`。
 
-## 插件更新
+继承功能的详细说明见 [中文参考](docs/REFERENCE.zh.md)、[邮件操作](docs/MAILBOX.md)和[发送与草稿流程](docs/OUTGOING-AUTOMATION.md)。这些文档保留上游语境；安装名称和监控范围以本 README 为准。
 
-在工作台或原生插件详情页底部检查更新。默认自动检查，**默认不自动安装**；是否安装、何时重启由你决定。Suite 管理的组件随整包更新。[查看更新规则](https://github.com/STARDUSTLC666/dsh-email/blob/main/docs/REFERENCE.zh.md)。
-
-## 文档
-
-- [详细使用、配置与边界](https://github.com/STARDUSTLC666/dsh-email/blob/main/docs/REFERENCE.zh.md)
-- [更新记录](https://github.com/STARDUSTLC666/dsh-email/blob/main/CHANGELOG.md)
-- [验证范围与历史](https://github.com/STARDUSTLC666/dsh-email/blob/main/docs/VALIDATION.md)
-
-## 反馈与贡献
-
-如果插件帮到了你，欢迎 Star，让更多人发现它。问题和建议请提交 [Issues](https://github.com/STARDUSTLC666/dsh-email/issues)，也欢迎代码与文档 [PR](https://github.com/STARDUSTLC666/dsh-email/pulls)。反馈时附上版本与复现步骤，并移除凭据。
-
-## License
-
-[MIT](https://github.com/STARDUSTLC666/dsh-email/blob/main/LICENSE)
-
-<a id="依赖与配置"></a>
+问题反馈：[Issues](https://github.com/sunqing975/dsh-email-monitor/issues)。

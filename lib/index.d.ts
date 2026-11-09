@@ -1,6 +1,17 @@
 import type { EmailConfig } from './config.js';
 import { type MailDependencies } from './mail-service.js';
 export declare const Config: import("@deepseek-ai/schemastery").default;
+export declare const meta: {
+    title: {
+        en: string;
+        'zh-CN': string;
+    };
+    description: {
+        en: string;
+        'zh-CN': string;
+    };
+};
+export declare const icon: string;
 export declare const name = "tool-email";
 export declare const inject: string[];
 export type Config = EmailConfig;

@@ -1,7 +1,7 @@
 {
-  "name": "dsh-email",
-  "version": "0.24.0",
-  "description": "DSH 邮件工作台：图文回复与草稿、确认定时发送、Google/Outlook 授权、多邮箱及可选邮件任务。欢迎提交 issues 和 PR。",
+  "name": "dsh-email-monitor",
+  "version": "0.24.0-monitor.1",
+  "description": "基于 dsh-email 的 DSH 多邮箱助手：支持 QQ、163、企业邮箱等邮件接入，新增邮件监控、AI 摘要与回复建议；自动监控首期开放 163 IMAP。",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -25,7 +25,7 @@
     "assets/plugin-icon.webp"
   ],
   "scripts": {
-    "build": "tsc && node scripts/build-client.mjs && node scripts/build-updates.mjs",
+    "build": "tsc && node scripts/build-client.mjs",
     "prepublishOnly": "npm run build",
     "test": "node --test --test-concurrency=2 \"test/*.test.mjs\""
   },
@@ -42,12 +42,12 @@
   "author": "stardustlc",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/STARDUSTLC666/dsh-email.git"
+    "url": "git+https://github.com/sunqing975/dsh-email-monitor.git"
   },
   "bugs": {
-    "url": "https://github.com/STARDUSTLC666/dsh-email/issues"
+    "url": "https://github.com/sunqing975/dsh-email-monitor/issues"
   },
-  "homepage": "https://github.com/STARDUSTLC666/dsh-email#readme",
+  "homepage": "https://github.com/sunqing975/dsh-email-monitor#readme",
   "license": "MIT",
   "packageManager": "pnpm@11.7.0",
   "engines": {

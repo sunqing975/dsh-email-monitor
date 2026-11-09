@@ -1,4 +1,4 @@
-import { registerUpdates } from '@stardustlc/dsh-updates'
+import { installIncomingMonitor } from './incoming-monitor.js'
 import { installSendApproval } from './approval.js'
 import type { EmailConfig } from './config.js'
 import { createEmailRuntime } from './runtime.js'
@@ -15,14 +15,18 @@ import { disposeOAuthFlows } from './oauth2.js'
 import { MailTaskBackend, installMailTasks } from './mail-tasks.js'
 export const Config = ConfigSchema
 
+export const meta = {
+  title: { en: 'Email monitor', 'zh-CN': '邮箱与新邮件监控' },
+  description: { en: 'Mailbox access and opt-in incoming-mail summary conversations.', 'zh-CN': '邮箱接入，以及可选的新邮件自动摘要与回复建议会话。' },
+}
+// Original simple envelope mark, released under this package’s MIT license.
+export const icon = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="3" y="6" width="26" height="20" rx="4" fill="#526a82"/><path d="m5 9 11 9L27 9" fill="none" stroke="white" stroke-width="2"/></svg>')
 export const name = 'tool-email'
 export const inject = ['settings', 'tools']
 export type Config = EmailConfig
 
 /** Compose settings/pool lifecycle, tools, browser routes and the outgoing-mail gate. */
 export function apply(ctx: any, config: Config = {}): void {
-  registerUpdates(ctx, { name: "dsh-email" })
-
   installEmailApplication(ctx,config)
 }
 
@@ -48,6 +52,7 @@ export function installEmailApplication(ctx:any,config:Config={},dependencies:Ma
   installEmailDrafts(ctx, drafts)
   installEmailMailbox(ctx, new EmailMailboxBackend(runtime, drafts))
   installMailTasks(ctx,new MailTaskBackend(runtime))
+  installIncomingMonitor(ctx, runtime, config)
   for (const definition of buildEmailTools(runtime, drafts)) ctx.tools.register(definition)
   installSendApproval(ctx, runtime)
   installScheduleApproval(ctx,drafts)

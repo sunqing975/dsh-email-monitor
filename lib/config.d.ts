@@ -125,6 +125,12 @@ export interface AccountConfig {
     replyTimeZone?: string;
 }
 export interface EmailConfig extends AccountConfig {
+    /** Host-side incoming-mail summaries; opt in after configuring the account. */
+    incomingMonitorEnabled?: boolean;
+    incomingMonitorPollSeconds?: number;
+    incomingMonitorAccount?: string;
+    incomingMonitorFolder?: string;
+    incomingMonitorCwd?: string;
     /** Show browser new-mail notifications. UI policy only; default true. */
     newMailPopup?: boolean;
     /** Per-account recipient rules, independent of IMAP/SMTP connection settings. */
